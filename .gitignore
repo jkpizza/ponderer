@@ -198,3 +198,4 @@ cython_debug/
 
 # Ignore all content in the data directory...
 data/*
+results/*
