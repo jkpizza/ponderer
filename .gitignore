@@ -192,3 +192,9 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# All files with test in the name
+*test*
+
+# Ignore all content in the data directory...
+data/*
