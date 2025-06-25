@@ -2,6 +2,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import os
 import matplotlib.pyplot as plt
+import json
 
 def setup_hooks(model):
     """Setup hooks on all transformer layers of the model to store their outputs.
@@ -104,15 +105,16 @@ def measure_latent_distance(activations, layer_index):
     distances = torch.norm(differences, p=2, dim=2).squeeze(0) # [1, seq_len-1, emb_dim] -> [seq_len-1]
     
     # Normalize the distances
-    mean_distance = torch.mean(distances)
+    # mean_distance = torch.mean(distances)
     std_distance = torch.std(distances)
     
     # Avoid division by zero
-    normalized_distances = (distances - mean_distance) / (std_distance + 1e-8)
+    # normalized_distances = (distances - mean_distance) / (std_distance + 1e-8)
+    normalized_distances = distances / (std_distance + 1e-8)
     
     return normalized_distances
 
-def plot_latent_distance(distances_dict, tokens, prompt_length):
+def plot_latent_distance(distances_dict, tokens, prompt_length, filename, title, generated_only=False):
     """
     Plots the latent distance for multiple layers on a single graph.
 
@@ -120,23 +122,28 @@ def plot_latent_distance(distances_dict, tokens, prompt_length):
         distances_dict (dict): A dictionary of distances, with labels as keys.
         tokens (list): A list of all tokens (prompt + generated).
         prompt_length (int): The length of the initial prompt.
+        filename (str): The filename to save the plot to.
+        title (str): The title for the plot.
+        generated_only (bool): If True, plot only the generated part of the sequence.
     """
     plt.figure(figsize=(18, 8))
     
+    start_index = prompt_length - 1 if generated_only else 0
+    
     for label, distances in distances_dict.items():
-        plt.plot(distances.cpu().numpy(), label=label, marker='o', linestyle='-', markersize=4)
+        plot_distances = distances[start_index:]
+        plt.plot(plot_distances.cpu().numpy(), label=label, marker='o', linestyle='-', markersize=4)
 
     # Create labels for the x-axis showing the transition between tokens
-    tick_labels = [f"{tok1.replace('Ġ', ' ')}→{tok2.replace('Ġ', ' ')}" for tok1, tok2 in zip(tokens[:-1], tokens[1:])]
+    plot_tokens = tokens[start_index:]
+    tick_labels = [f"{tok1.replace('Ġ', ' ')}→{tok2.replace('Ġ', ' ')}" for tok1, tok2 in zip(plot_tokens[:-1], plot_tokens[1:])]
     plt.xticks(ticks=range(len(tick_labels)), labels=tick_labels, rotation=90, fontsize=9)
     
-    # Add a vertical line to distinguish prompt from generation
-    # The last prompt token is at index prompt_length - 1.
-    # The first distance involving a generated token is at index (prompt_length - 1).
-    # We draw the line just before that point.
-    plt.axvline(x=prompt_length - 1.5, color='r', linestyle='--', label='Start of Generation')
+    # Add a vertical line to distinguish prompt from generation if plotting the full sequence
+    if not generated_only:
+        plt.axvline(x=prompt_length - 1.5, color='r', linestyle='--', label='Start of Generation')
 
-    plt.title('Normalized Latent Distance Between Consecutive Tokens', fontsize=16)
+    plt.title(title, fontsize=16)
     plt.xlabel('Token Transition', fontsize=12)
     plt.ylabel('Normalized L2 Distance', fontsize=12)
     plt.legend()
@@ -145,20 +152,45 @@ def plot_latent_distance(distances_dict, tokens, prompt_length):
     
     # Ensure the results directory exists
     os.makedirs('results', exist_ok=True)
-    plt.savefig('results/latent_distance.png')
+    plt.savefig(filename)
     
 if __name__ == '__main__':
+    # Load GSM8K dataset
+    try:
+        with open('data/gsm_test.json', 'r') as f:
+            gsm_data = json.load(f)
+    except FileNotFoundError:
+        print("Error: 'data/gsm_test.json' not found.")
+        print("Please make sure the GSM8K test set is available at the specified path.")
+        exit()
+
+    # Select a question from the dataset
+    question_index = 0  # You can change this index to explore different questions
+    if question_index < len(gsm_data):
+        question = gsm_data[question_index]['question']
+    else:
+        print(f"Error: question_index {question_index} is out of bounds for the dataset with {len(gsm_data)} questions.")
+        exit()
+
     # Load pre-trained model and tokenizer
     model_id = 'gpt2'
-    model = AutoModelForCausalLM.from_pretrained(model_id)
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    # model_path = 'results/gpt2_gsm8k'
+    model_path = 'results/gpt2_gsm8k_latent'
+    try:
+        model = AutoModelForCausalLM.from_pretrained(model_id)
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
+        model.load_state_dict(torch.load(model_path))
+    except (OSError, FileNotFoundError):
+        print(f"Error: Base model '{model_id}' not found, or weight file not found at '{model_path}'.")
+        print("Please ensure the base model is available and the fine-tuned model is saved at the correct path.")
+        exit()
+        
     tokenizer.pad_token = tokenizer.eos_token
 
     # The model needs to be in eval mode for hooks to work correctly without affecting gradients
     model.eval()
 
     # Example Usage
-    question = "What is the capital of France?"
     prompt = f"Q: {question}\nA: Let's think step by step."
 
     # Encode the prompt
@@ -194,6 +226,22 @@ if __name__ == '__main__':
     }
 
     # Plot the distances
-    plot_latent_distance(distances_to_plot, all_tokens, prompt_length)
-    
+    plot_latent_distance(
+        distances_to_plot, 
+        all_tokens, 
+        prompt_length,
+        'results/latent_distance.png',
+        'Normalized Latent Distance Between Consecutive Tokens'
+    )
     print("Plot saved to results/latent_distance.png")
+
+    # Plot the distances for the generated part only
+    plot_latent_distance(
+        distances_to_plot, 
+        all_tokens, 
+        prompt_length,
+        'results/latent_distance_generated_only.png',
+        'Normalized Latent Distance Between Consecutive Tokens (Generated Part Only)',
+        generated_only=True
+    )
+    print("Plot of generated part saved to results/latent_distance_generated_only.png")
