@@ -195,6 +195,7 @@ cython_debug/
 
 # All files with test in the name
 *test*
+*temp*
 
 # Ignore all content in the data directory...
 data/*
