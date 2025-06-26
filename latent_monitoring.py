@@ -4,6 +4,7 @@ import os
 import matplotlib.pyplot as plt
 import json
 from utils.hooks import setup_hooks, remove_hooks
+from utils.distance import measure_latent_distance, plot_latent_distance
 
 def generate_latent_activations(model, tokenizer, input_ids, max_length=50):
     """
@@ -44,80 +45,6 @@ def generate_latent_activations(model, tokenizer, input_ids, max_length=50):
     
     return generated_text, activations, input_ids
 
-def measure_latent_distance(activations, layer_index):
-    """
-    Measures the L2 distance between activations over the step outputs of a given layer.
-
-    Args:
-        activations (list): A list of dictionaries containing activations at each step.
-        layer_index (int): The index of the layer to measure the distance.
-
-    Returns:
-        float: A list of L2 distances between activations over the step outputs of the given layer.
-    """
-    # Get the activations for the given layer
-    layer_activations = activations[f'layer_{layer_index}']
-
-    # Calculate the L2 distance between activations over the step outputs of the given layer
-    # Select all activations except the last one, and all except the first one
-    activations_except_last = layer_activations[:, :-1]
-    activations_except_first = layer_activations[:, 1:]
-    
-    # Calculate the element-wise difference (vector from token step t to t+1)
-    differences = activations_except_first - activations_except_last # [1, seq_len, emb_dim] -> [1, seq_len-1, emb_dim]
-    
-    # Calculate the L2 norm (Euclidean distance) for each time step's activation vector
-    distances = torch.norm(differences, p=2, dim=2).squeeze(0) # [1, seq_len-1, emb_dim] -> [seq_len-1]
-    
-    # Normalize the distances
-    # mean_distance = torch.mean(distances)
-    std_distance = torch.std(distances)
-    
-    # Avoid division by zero
-    # normalized_distances = (distances - mean_distance) / (std_distance + 1e-8)
-    normalized_distances = distances / (std_distance + 1e-8)
-    
-    return normalized_distances
-
-def plot_latent_distance(distances_dict, tokens, prompt_length, filename, title, generated_only=False):
-    """
-    Plots the latent distance for multiple layers on a single graph.
-
-    Args:
-        distances_dict (dict): A dictionary of distances, with labels as keys.
-        tokens (list): A list of all tokens (prompt + generated).
-        prompt_length (int): The length of the initial prompt.
-        filename (str): The filename to save the plot to.
-        title (str): The title for the plot.
-        generated_only (bool): If True, plot only the generated part of the sequence.
-    """
-    plt.figure(figsize=(18, 8))
-    
-    start_index = prompt_length - 1 if generated_only else 0
-    
-    for label, distances in distances_dict.items():
-        plot_distances = distances[start_index:]
-        plt.plot(plot_distances.cpu().numpy(), label=label, marker='o', linestyle='-', markersize=4)
-
-    # Create labels for the x-axis showing the transition between tokens
-    plot_tokens = tokens[start_index:]
-    tick_labels = [f"{tok1.replace('Ġ', ' ')}→{tok2.replace('Ġ', ' ')}" for tok1, tok2 in zip(plot_tokens[:-1], plot_tokens[1:])]
-    plt.xticks(ticks=range(len(tick_labels)), labels=tick_labels, rotation=90, fontsize=9)
-    
-    # Add a vertical line to distinguish prompt from generation if plotting the full sequence
-    if not generated_only:
-        plt.axvline(x=prompt_length - 1.5, color='r', linestyle='--', label='Start of Generation')
-
-    plt.title(title, fontsize=16)
-    plt.xlabel('Token Transition', fontsize=12)
-    plt.ylabel('Normalized L2 Distance', fontsize=12)
-    plt.legend()
-    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
-    plt.tight_layout()  # Adjust layout to make room for rotated labels
-    
-    # Ensure the results directory exists
-    os.makedirs('results', exist_ok=True)
-    plt.savefig(filename)
     
 if __name__ == '__main__':
     # Load GSM8K dataset
@@ -139,8 +66,7 @@ if __name__ == '__main__':
 
     # Load pre-trained model and tokenizer
     model_id = 'gpt2'
-    # model_path = 'results/gpt2_gsm8k'
-    model_path = 'results/gpt2_gsm8k_latent'
+    model_path = 'results/gpt2_gsm8k'
     try:
         model = AutoModelForCausalLM.from_pretrained(model_id)
         tokenizer = AutoTokenizer.from_pretrained(model_id)
