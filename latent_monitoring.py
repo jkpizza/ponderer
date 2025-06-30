@@ -45,12 +45,13 @@ def main():
     print("\n" + "="*50 + "\n")
     
     # Calculate distances for various layers
-    distances_start = measure_latent_distance(activations, 0)
+    metric = 'l2'
+    distances_start = measure_latent_distance(activations, 0, metric=metric)
     first_quartile, second_quartile, third_quartile, fourth_quartile = num_layers // 4, num_layers // 2, 3 * num_layers // 4, num_layers-1
-    distances_first_quartile = measure_latent_distance(activations, first_quartile)
-    distances_second_quartile = measure_latent_distance(activations, second_quartile)
-    distances_third_quartile = measure_latent_distance(activations, third_quartile)
-    distances_end = measure_latent_distance(activations, fourth_quartile)
+    distances_first_quartile = measure_latent_distance(activations, first_quartile, metric=metric)
+    distances_second_quartile = measure_latent_distance(activations, second_quartile, metric=metric)
+    distances_third_quartile = measure_latent_distance(activations, third_quartile, metric=metric)
+    distances_end = measure_latent_distance(activations, fourth_quartile, metric=metric)
     
     # Combine distances into a dictionary for plotting
     distances_to_plot = {
@@ -67,7 +68,7 @@ def main():
         all_tokens, 
         prompt_length,
         'results/latent_distance.png',
-        'Normalized Latent Distance Between Consecutive Tokens'
+        f'Normalized {metric.upper()} Latent Distance Between Consecutive Tokens'
     )
     print("Plot saved to results/latent_distance.png")
 
@@ -77,7 +78,7 @@ def main():
         all_tokens, 
         prompt_length,
         'results/latent_distance_generated_only.png',
-        'Normalized Latent Distance Between Consecutive Tokens (Generated Part Only)',
+        f'Normalized {metric.upper()} Latent Distance Between Consecutive Tokens (Generated Part Only)',
         generated_only=True
     )
     print("Plot of generated part saved to results/latent_distance_generated_only.png")
