@@ -1,8 +1,6 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-import os
 import json
-from utils.hooks import setup_hooks, remove_hooks
 from utils.distance import measure_latent_distance, plot_latent_distance
 from generation import generate_and_monitor_standard
 
