@@ -167,8 +167,9 @@ def main():
     
     def extract_final_answer(text: str) -> str:
         """Extract the final answer from GSM8K-formatted text"""
-        match = re.search(r'####\s*(\d+)', text)
+        match = re.search(r'####\s*(-?[\d,]+)', text)
         if match:
+            # Correct for commas, e.g., "1,600" -> "1600"
             answer = match.group(1)
             answer = answer.replace(',', '')
             return answer
