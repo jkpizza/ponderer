@@ -9,11 +9,12 @@ from typing import Optional
 
 import torch
 import torch.distributed as dist
+from torch.utils.data import DataLoader
 from datasets import Dataset
 from transformers import PreTrainedTokenizerBase
 from transformers.data.data_collator import pad_without_fast_tokenizer_warning
 
-        
+
 class TokenizedLatentCollator:
     def __init__(self, tokenizer, start_latent_id, latent_id, end_latent_id, label_pad_token_id=-100, max_seq_length=None):
         self.tokenizer = tokenizer
@@ -69,63 +70,88 @@ class TokenizedLatentCollator:
             "labels": torch.tensor(labels, dtype=torch.long)
         }
         
-def get_dataset(path, tokenizer, max_size=1000000000):
+class AnswerOnlyCausalCollator:
+    def __init__(self, tokenizer, answer_template="### Answer:", max_seq_length=512, left_pad_token_id=-100):
+        self.tokenizer = tokenizer
+        self.max_seq_length = max_seq_length
+        self.left_pad_token_id = left_pad_token_id
+        self.template_ids = tokenizer(answer_template, add_special_tokens=False)["input_ids"]
 
-    def tokenize_sample(sample):
+    @staticmethod
+    def _find_sequence(seq, subseq):
+        n, m = len(seq), len(subseq)
+        if n == 0 or n < m:
+            return None
+        for i in range(n - m + 1):
+            if seq[i:i+m] == subseq:
+                return i
+        return None
 
-        question_tokenized = tokenizer.encode(
-            sample["question"] + "\n", add_special_tokens=True
+    def __call__(self, features):
+        batch = self.tokenizer.pad(
+            features,
+            padding=True,
+            max_length=self.max_seq_length,
+            return_tensors="pt"
         )
-        steps_tokenized = [
-            tokenizer.encode(s + "\n", add_special_tokens=False)
-            for s in sample["steps"]
-        ]
-        answer_tokenized = tokenizer.encode(
-            "### " + sample["answer"], add_special_tokens=False
-        ) + [tokenizer.eos_token_id]
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
+        labels = torch.full_like(input_ids, self.left_pad_token_id)
+        
+        for i in range(input_ids.size(0)):
+            ids = input_ids[i].tolist()
+            attn_len = int(attention_mask[i].sum().item())
+            start_idx = self._find_sequence(ids[:attn_len], self.template_ids)
+            if start_idx is None:
+                continue
+            ans_start = start_idx + len(self.template_ids)
+            labels[i, ans_start:attn_len] = input_ids[i, ans_start:attn_len]
+        
+        batch["labels"] = labels
+        return batch
 
-        sample = {
-            "question_tokenized": question_tokenized,
-            "steps_tokenized": steps_tokenized,
-            "answer_tokenized": answer_tokenized,
-            "idx": sample["idx"],
-        }
-        return sample
-
-    data = json.load(open(path))[:max_size]
-    data = [{**d, "idx": idx} for idx, d in enumerate(data)]
-
-    keys = data[0].keys()
-    dataset = Dataset.from_dict({k: [d[k] for d in data] for k in keys})
-
-    if torch.cuda.device_count() > 1:
-        if dist.get_rank() == 0:
-            processed_dataset = [
-                dataset.map(
-                    tokenize_sample, remove_columns=list(dataset.features), num_proc=32
-                )
-            ]
-        else:
-            processed_dataset = [None]
-        dist.broadcast_object_list(processed_dataset, src=0)
-        dataset = processed_dataset[0]
-
-    else:
-        dataset = dataset.map(
-            tokenize_sample, remove_columns=list(dataset.features), num_proc=32
-        )
-
-    # verify
-    d = data[0]
-    complete = d["question"] + "\n" + "\n".join(d["steps"]) + "\n### " + d["answer"]
-    complete_tokenized = tokenizer.encode(complete, add_special_tokens=True) + [
-        tokenizer.eos_token_id
-    ]
-    assert (
-        complete_tokenized
-        == dataset[0]["question_tokenized"]
-        + list(itertools.chain.from_iterable(dataset[0]["steps_tokenized"]))
-        + dataset[0]["answer_tokenized"]
-    )
-
-    return dataset
+class LatentDataloaderCreator:
+    """
+    DataLoaderCreator for latent-aware training.
+    The dataset is split into stages, and the data loader is created for each stage.
+    """
+    def __init__(self, 
+                 ds, 
+                 formatting_prompts_func, 
+                 tokenizer, 
+                 tokenize_fn, 
+                 batch_size,
+                 data_collator,
+                 shuffle=False,
+                 num_workers=0,
+                 contains_latent=True, 
+                 max_latents_max=10,
+                 stages=10):
+        self.ds = ds
+        self.formatting_prompts_func = formatting_prompts_func
+        self.tokenizer = tokenizer
+        self.tokenize_fn = tokenize_fn
+        self.batch_size = batch_size
+        self.data_collator = data_collator
+        self.shuffle = shuffle
+        self.num_workers = num_workers
+        self.contains_latent = contains_latent
+        self.max_latents_max = max_latents_max
+        self.stages = stages
+        
+        # Initialize
+        self.completed = False
+        self.stage = 1
+        
+    def update_stage(self):
+        self.stage += 1
+        if self.stage >= self.stages:
+            self.completed = True
+        
+    def create_dataloader(self):
+        selected_ds = self.ds.select(range(int(len(self.ds) * (self.stage-1) / self.stages), int(len(self.ds) * (self.stage) / self.stages)))
+        max_latents = int(self.max_latents_max * self.stage / self.stages)
+        train_text = selected_ds.map(lambda ex: self.formatting_prompts_func(ex, contains_latent=self.contains_latent, max_latents=max_latents), remove_columns=selected_ds.column_names)
+        train_tok = train_text.map(lambda ex: self.tokenize_fn(ex, self.tokenizer), remove_columns=train_text.column_names)
+        train_loader = DataLoader(train_tok, batch_size=self.batch_size, shuffle=True, num_workers=self.num_workers, collate_fn=self.data_collator)
+        return train_loader
